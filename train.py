@@ -1,6 +1,9 @@
 import os
 import sys
-sys.path.append(os.path.expanduser('C:/Users/10485/Desktop/科研训练/uavenv'))
+if sys.platform == 'win32':
+    sys.path.append(os.path.expanduser('C:/Users/10485/Desktop/科研训练/uavenv'))
+else:
+    sys.path.append(os.path.expanduser('~/Desktop/科研训练/uav env'))
 from UAVenv.uav.uav import systemEnv
 os.environ['PARL_BACKEND'] = 'torch'
 import warnings
@@ -14,21 +17,24 @@ import pandas as pd
 
 from cartpole_model import uavModel
 from cartpole_agent import Agent
-from parl.env import CompatWrapper, is_gym_version_ge
+from env_utils import Wapper
 from algorithm import DQN
 
-LEARN_FREQ = 1  # training frequency
-MEMORY_SIZE = 200000
-MEMORY_WARMUP_SIZE = 200
+LEARN_FREQ = 10  # training frequency
+MEMORY_SIZE = int(1e6)
+MEMORY_WARMUP_SIZE = 1e3
 BATCH_SIZE = 64
 LEARNING_RATE = 0.01
 GAMMA = 0.99
 
+def task_generator():# 生成seed
+    task = np.random.randint(0, 1e9)
+    return task
 
 # train an episode
-def run_train_episode(agent, env, rpm):
+def run_train_episode(agent, env, rpm, task):
     total_reward = 0
-    obs = env.reset()
+    obs, _ = env.reset(task)
     step = 0
     while True:
         step += 1
@@ -64,27 +70,27 @@ def run_train_episode(agent, env, rpm):
 
 
 # evaluate 1 episodes
-def run_evaluate_episodes(env, agent, eval_episodes=1):
+def run_evaluate_episodes(env, agent, eval_episodes, task):
     eval_reward = []
     for i in range(eval_episodes):
-        obs = env.reset()
-        episode_reward = 0
+        obs, _ = env.reset(task)
+        r = []
         while True:
             action = agent.predict(obs)
             obs, reward, done, _ = env.step(action)
-            episode_reward += np.mean(reward)
+            r.append(reward)
             if done.all():
                 break
-        eval_reward.append(episode_reward)
+        eval_reward.append(np.mean(np.sum(np.array(r), axis=0)))
     return np.mean(eval_reward)
 
 
 def main():
-    env = CompatWrapper(systemEnv())
-    eval_env = CompatWrapper(systemEnv())
+    env = Wapper(systemEnv())
+    eval_env = Wapper(systemEnv())
 
-    obs_dim = env.observation_space[0].shape
-    act_dim = env.action_space[0].nvec
+    obs_dim = eval_env.obs_space
+    act_dim = eval_env.act_space
 
     rpm = [ReplayMemory(MEMORY_SIZE, obs_dim[0], len(act_dim)) for _ in range(env.n_clusters)]
 
@@ -95,31 +101,37 @@ def main():
 
     # warmup memory
     while len(rpm[0]) < MEMORY_WARMUP_SIZE:
-        run_train_episode(agent, env, rpm)
+        run_train_episode(agent, env, rpm, task_generator())
     
     max_episode = args.max_episode
 
     # start training
     episode = 0
     data = []
+    seed_set = set()
     while episode < max_episode:
         # train part
         # for i in range(50):
-        total_reward = run_train_episode(agent, env, rpm)
+        task = task_generator()
+        total_reward = run_train_episode(agent, env, rpm, task)
         episode += 1
 
         # test part
-        eval_reward = run_evaluate_episodes(eval_env, agent)
+        eval_reward = run_evaluate_episodes(eval_env, agent, 1, task)
         logger.info('episode:{}    e_greed:{}   Test reward:{}'.format(episode, agent.e_greed, eval_reward))
         data.append(eval_reward)
         Temp = pd.DataFrame(data)
         Temp.to_csv('data.csv', index=False, header=False)
 
+        # save seed
+        if eval_reward > 350:
+            seed_set.add(task)
+            pd.DataFrame(list(seed_set)).to_csv('seed.csv', index=False, header=False)
+
 
 if __name__ == '__main__':
-
     parser = argparse.ArgumentParser()
-    parser.add_argument('--max_episode', type=int, default=3000,)
+    parser.add_argument('--max_episode', type=int, default=300000,)
     args = parser.parse_args()
 
     main()
